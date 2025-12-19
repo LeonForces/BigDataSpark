@@ -85,3 +85,145 @@
 7. Код Apache Spark трансформации данных из снежинки/звезды в отчеты в Neo4j.
 8. Код Apache Spark трансформации данных из снежинки/звезды в отчеты в MongoDB.
 9. Код Apache Spark трансформации данных из снежинки/звезды в отчеты в Valkey.
+
+---
+
+## Что реализовано в этом репозитории
+
+### Модель данных
+
+- **Источник (PostgreSQL):** `public.mock_data` (10 CSV файлов автоматически загружаются при первом старте контейнера PostgreSQL).
+- **Звезда (PostgreSQL):**
+  - `dwh.dim_customer`
+  - `dwh.dim_seller`
+  - `dwh.dim_product`
+  - `dwh.dim_store`
+  - `dwh.dim_supplier`
+  - `dwh.dim_date`
+  - `dwh.fact_sales`
+
+### Отчеты (ClickHouse — обязательно)
+
+База `reports`, 6 таблиц-витрин:
+
+- `reports.mart_sales_products`
+- `reports.mart_sales_customers`
+- `reports.mart_sales_time`
+- `reports.mart_sales_stores`
+- `reports.mart_sales_suppliers`
+- `reports.mart_product_quality`
+
+### Spark jobs
+
+- `spark/jobs/01_raw_to_dwh.py` — `mock_data` → звезда в PostgreSQL (`dwh.*`).
+- `spark/jobs/02_dwh_to_clickhouse.py` — звезда → 6 витрин в ClickHouse (`reports.*`). **(обязательно)**
+- `spark/jobs/03_dwh_to_cassandra.py` — звезда → 6 витрин в Cassandra. (опционально)
+- `spark/jobs/04_dwh_to_mongo.py` — звезда → 6 коллекций в MongoDB. (опционально)
+- `spark/jobs/05_dwh_to_neo4j.py` — звезда → 6 наборов сущностей в Neo4j. (опционально)
+- `spark/jobs/06_dwh_to_valkey.py` — звезда → 6 ключей (hash) в Valkey. (опционально)
+
+---
+
+## Как запустить (Docker)
+
+### 0) Важно про порты
+
+Если на машине уже занят порт `5432` (локальный PostgreSQL), используйте, например, `PG_PORT_EXTERNAL=5433` **во всех командах ниже**.
+
+### Быстрый запуск через Makefile
+
+```bash
+make all
+# если 5432 занят:
+PG_PORT_EXTERNAL=5433 make all
+```
+
+### 1) Поднять PostgreSQL + ClickHouse
+
+```bash
+docker compose up -d postgres clickhouse
+docker compose build spark
+```
+
+PostgreSQL на первом запуске:
+- создаст схему `dwh` и таблицу `public.mock_data`
+- загрузит данные из `исходные данные/*.csv` в `public.mock_data`
+
+### 2) Построить звезду в PostgreSQL
+
+```bash
+docker compose run --rm spark spark-submit /opt/jobs/01_raw_to_dwh.py
+```
+
+### 3) Построить 6 витрин в ClickHouse (обязательно)
+
+```bash
+docker compose run --rm spark spark-submit /opt/jobs/02_dwh_to_clickhouse.py
+```
+
+---
+
+## Опционально: Cassandra / MongoDB / Neo4j / Valkey
+
+Поднять дополнительные базы:
+
+```bash
+docker compose --profile extras up -d cassandra mongo neo4j valkey
+```
+
+Запустить витрины:
+
+```bash
+docker compose run --rm spark spark-submit /opt/jobs/03_dwh_to_cassandra.py
+docker compose run --rm spark spark-submit /opt/jobs/04_dwh_to_mongo.py
+docker compose run --rm spark spark-submit /opt/jobs/05_dwh_to_neo4j.py
+docker compose run --rm spark spark-submit /opt/jobs/06_dwh_to_valkey.py
+```
+
+---
+
+## Проверка отчетов (примеры запросов)
+
+### PostgreSQL (звезда)
+
+```sql
+SELECT COUNT(*) FROM dwh.fact_sales;
+```
+
+### ClickHouse (витрины)
+
+Топ-10 продуктов по количеству продаж:
+
+```sql
+SELECT *
+FROM reports.mart_sales_products
+ORDER BY total_sales_quantity DESC
+LIMIT 10;
+```
+
+Топ-10 клиентов по выручке:
+
+```sql
+SELECT *
+FROM reports.mart_sales_customers
+ORDER BY total_revenue DESC
+LIMIT 10;
+```
+
+Месячный тренд выручки:
+
+```sql
+SELECT year_month, total_revenue
+FROM reports.mart_sales_time
+ORDER BY year, month;
+```
+
+---
+
+## Сброс окружения
+
+Полный сброс (удалит volume с данными PostgreSQL/ClickHouse и заново загрузит CSV при следующем `up`):
+
+```bash
+docker compose down -v
+```
